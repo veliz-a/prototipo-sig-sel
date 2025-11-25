@@ -4,7 +4,9 @@ from supabase import create_client, Client
 import requests
 import json
 
-# --- Configuración Inicial y Conexión ---
+# OBTENER LA CLAVE DE SERVICIO PARA AUTORIZACIÓN
+# Ya se obtiene desde secrets.toml
+SERVICE_ROLE_KEY = st.secrets["supabase"]["service_key"] 
 
 # Configuración de página con aspecto profesional
 st.set_page_config(
@@ -13,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Conectar a Supabase usando st.secrets (formato TOML)
+# Conexión a Supabase (usa anon_key para solo lectura inicial)
 @st.cache_resource
 def init_connection():
     """Inicializa la conexión a Supabase."""
@@ -39,6 +41,7 @@ EDGE_FUNCTION_URL = st.secrets["edge_function"]["url"]
 def fetch_expedientes():
     """Obtiene la lista de expedientes de contratación."""
     try:
+        # Usa el cliente con ANON KEY para leer datos públicos/permitidos
         response = supabase.table("expedientes_contratacion").select("id, codigo_proceso, objeto_contrato, estado_fase").execute()
         return pd.DataFrame(response.data)
     except Exception as e:
@@ -48,6 +51,7 @@ def fetch_expedientes():
 def fetch_ofertas(expediente_id):
     """Obtiene las ofertas para un expediente dado."""
     try:
+        # Usa el cliente con ANON KEY para leer datos públicos/permitidos
         response = supabase.table("ofertas_recibidas").select("*").eq("expediente_id", expediente_id).execute()
         return pd.DataFrame(response.data)
     except Exception as e:
@@ -55,13 +59,11 @@ def fetch_ofertas(expediente_id):
         return pd.DataFrame()
 
 def call_edge_function(expediente_id):
-    """Llama a la Edge Function de Supabase para iniciar el cálculo."""
+    """Llama a la Edge Function de Supabase para iniciar el cálculo, incluyendo el header de autorización."""
+    # 🚨 SOLUCIÓN: Usar la clave de Service Role en el encabezado
     headers = {
         "Content-Type": "application/json",
-        # Nota: La Edge Function requiere la clave Service Role para escritura. 
-        # En un entorno real de Streamlit, se debe usar la clave ANON para la DB, 
-        # pero la Edge Function debe tener acceso a la clave Service Role desde su entorno (Deno.env.get).
-        # Aquí simplificamos el llamado, confiando en que la Edge Function tiene permisos.
+        "Authorization": f"Bearer {SERVICE_ROLE_KEY}" # Aquí se añade la clave secreta
     }
     payload = {"expediente_id": expediente_id}
     
@@ -110,6 +112,7 @@ with st.sidebar:
 st.header(f"Expediente a Evaluar: {selected_code}")
 
 # 1. Obtener Ofertas
+# Importante: Volver a llamar a fetch_ofertas después de call_edge_function para refrescar
 ofertas_df = fetch_ofertas(selected_id)
 
 if ofertas_df.empty:
@@ -137,6 +140,7 @@ col1, col2, col3 = st.columns([1, 1, 3])
 
 if col1.button("▶️ Ejecutar Motor de Calificación", type="primary", use_container_width=True):
     with st.spinner("Llamando a la Edge Function... Calculando puntajes de forma objetiva..."):
+        # La Edge Function requiere la clave de Service Role para realizar la escritura
         success, result = call_edge_function(selected_id)
         
         if success:
