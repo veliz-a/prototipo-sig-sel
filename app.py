@@ -1,126 +1,214 @@
-# app.py
 import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
+import requests
 import json
 
-import os
-try:
-    import tomllib  # Python 3.11+
-except ImportError:
+# --- Configuración Inicial y Conexión ---
+
+# Configuración de página con aspecto profesional
+st.set_page_config(
+    page_title=st.secrets["app"]["title"],
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Conectar a Supabase usando st.secrets (formato TOML)
+@st.cache_resource
+def init_connection():
+    """Inicializa la conexión a Supabase."""
     try:
-        import tomli as tomllib  # Para versiones <3.11, instalar tomli
-    except ImportError:
-        raise ImportError("Falta el paquete 'tomli'. Instala con 'pip install tomli' para Python <3.11.")
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["anon_key"]
+        return create_client(url, key)
+    except Exception as e:
+        st.error(f"Error al conectar con Supabase. Revise 'secrets.toml'. {e}")
+        return None
 
-# --- 1. Configuración de Conexión a Supabase (Seguridad) ---
-# Se recomienda usar secretos de Streamlit (st.secrets) para variables sensibles.
-# Para producción, usar st.secrets y nunca subir claves al repositorio.
-config_path = os.path.join(os.path.dirname(__file__), "config.toml")
-with open(config_path, "rb") as f:
-    config = tomllib.load(f)
+supabase: Client = init_connection()
 
-SUPABASE_URL = config["SUPABASE_URL"]
-SUPABASE_KEY = config["SUPABASE_KEY"]
-EDGE_FUNCTION_PATH = config.get("EDGE_FUNCTION_PATH", "/functions/v1/evaluar_ofertas_sigsel")
-EDGE_FUNCTION_URL = f"{SUPABASE_URL}{EDGE_FUNCTION_PATH}"
+if not supabase:
+    st.stop()
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# URL de la Edge Function (evaluar_ofertas_sigsel)
+EDGE_FUNCTION_URL = st.secrets["edge_function"]["url"]
 
-# --- 2. Funciones de Data y Lógica ---
+# --- Funciones de Datos ---
 
-# Función para obtener los expedientes disponibles para evaluar
-@st.cache_data
-def get_expedientes_pendientes():
-    """Obtiene la lista de expedientes en estado 'Evaluando Ofertas'."""
-    response = supabase.table('expedientes_contratacion').select('*').eq('estado_fase', 'Evaluando Ofertas').execute()
-    # Convertir JSONB a dict si es necesario, aunque Supabase Python lo hace por defecto
-    return response.data
+@st.cache_data(ttl=60)
+def fetch_expedientes():
+    """Obtiene la lista de expedientes de contratación."""
+    try:
+        response = supabase.table("expedientes_contratacion").select("id, codigo_proceso, objeto_contrato, estado_fase").execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Error al cargar expedientes: {e}")
+        return pd.DataFrame()
 
-# Función CLAVE: Llama a la Edge Function para realizar el cálculo
-def ejecutar_evaluacion_automatica(expediente_id):
-    """Llama a la Edge Function de Supabase para calcular y actualizar puntajes."""
-    st.info("Iniciando cálculo automático de puntajes (Llamando a Edge Function)...")
+def fetch_ofertas(expediente_id):
+    """Obtiene las ofertas para un expediente dado."""
+    try:
+        response = supabase.table("ofertas_recibidas").select("*").eq("expediente_id", expediente_id).execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Error al cargar ofertas: {e}")
+        return pd.DataFrame()
+
+def call_edge_function(expediente_id):
+    """Llama a la Edge Function de Supabase para iniciar el cálculo."""
+    headers = {
+        "Content-Type": "application/json",
+        # Nota: La Edge Function requiere la clave Service Role para escritura. 
+        # En un entorno real de Streamlit, se debe usar la clave ANON para la DB, 
+        # pero la Edge Function debe tener acceso a la clave Service Role desde su entorno (Deno.env.get).
+        # Aquí simplificamos el llamado, confiando en que la Edge Function tiene permisos.
+    }
+    payload = {"expediente_id": expediente_id}
     
-    # Esta parte simula la llamada a la Edge Function que hiciste en la guía anterior.
-    # En un entorno real de Streamlit en la nube, usarías la librería 'requests' de Python 
-    # para hacer un POST a la EDGE_FUNCTION_URL con el expediente_id.
+    try:
+        response = requests.post(EDGE_FUNCTION_URL, headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            return True, response.json()
+        else:
+            return False, response.json()
+    except Exception as e:
+        return False, {"error": str(e)}
+
+# --- Interfaz de Usuario ---
+
+st.title("Sistema SIG-SEL: Módulo de Evaluación Automática")
+st.caption("Prototipo Funcional para la Fase de Selección. Eliminando subjetividad en la calificación.")
+
+# --- Sidebar para Selección de Expediente ---
+expedientes_df = fetch_expedientes()
+
+with st.sidebar:
+    st.header("Selección de Expediente")
+    if expedientes_df.empty:
+        st.warning("No hay expedientes cargados. Por favor, revise la BD.")
+        st.stop()
+
+    # Mapeo para mostrar el código pero usar el ID internamente
+    expediente_options = {row['codigo_proceso']: row['id'] for index, row in expedientes_df.iterrows()}
     
-    # --- SIMULACIÓN DE LLAMADA (Reemplazar con llamada HTTP real) ---
-    # Debido a las restricciones de la clave anónima, simularemos la respuesta exitosa
-    # ya que la Edge Function requiere la clave Service Role para actualizar.
-    # El código real usaría 'requests.post(EDGE_FUNCTION_URL, headers, json={"expediente_id": expediente_id})'
+    selected_code = st.selectbox(
+        "Seleccione el Código del Proceso:",
+        options=list(expediente_options.keys()),
+        index=0
+    )
     
-    # Por ahora, para el prototipo: Asumimos éxito y forzamos un re-fetch de la BD
-    st.success("✅ Evaluación completada. Actualizando resultados...")
-    st.cache_data.clear() # Limpia el caché para refrescar los datos de la BD
+    selected_id = expediente_options[selected_code]
+    st.write(f"ID del Expediente (BD): `{selected_id}`")
+    
+    current_expediente = expedientes_df[expedientes_df['id'] == selected_id].iloc[0]
+    st.info(f"Estado: {current_expediente['estado_fase']}")
+    st.write(f"Objeto: {current_expediente['objeto_contrato']}")
 
-# Función para obtener los resultados actualizados
-def get_resultados_evaluacion(expediente_id):
-    """Obtiene todas las ofertas con los puntajes calculados."""
-    response = supabase.table('ofertas_recibidas').select('*').eq('expediente_id', expediente_id).order('puntaje_total', ascending=False).execute()
-    return response.data
 
-# --- 3. INTERFAZ DE STREAMLIT ---
+# --- Main Content ---
+st.header(f"Expediente a Evaluar: {selected_code}")
 
-st.set_page_config(layout="wide", page_title="SIG-SEL - Módulo de Evaluación")
-st.title("Sistema de Gestión de la Fase de Selección (SIG-SEL)")
-st.subheader("Dashboard del Comité - Evaluación de Ofertas")
+# 1. Obtener Ofertas
+ofertas_df = fetch_ofertas(selected_id)
+
+if ofertas_df.empty:
+    st.warning("No se han cargado ofertas para este expediente.")
+    st.stop()
+
+# 2. Pre-procesamiento de datos para la tabla
+columnas_ranking = ['razon_social', 'monto_ofertado', 'puntaje_precio', 'puntaje_tecnico', 'puntaje_total']
+display_df = ofertas_df[columnas_ranking].copy()
+
+# Ordenar por puntaje total (descendente)
+display_df = display_df.sort_values(by='puntaje_total', ascending=False)
+display_df['ranking'] = range(1, len(display_df) + 1)
+display_df = display_df[['ranking'] + columnas_ranking]
+
+# Formato de moneda y números
+display_df['monto_ofertado'] = display_df['monto_ofertado'].apply(lambda x: f"S/ {x:,.2f}")
+display_df['puntaje_precio'] = display_df['puntaje_precio'].round(2)
+display_df['puntaje_tecnico'] = display_df['puntaje_tecnico'].round(2)
+display_df['puntaje_total'] = display_df['puntaje_total'].round(2)
+
+
+# 3. Botón de Ejecución del Motor de Cálculo
+col1, col2, col3 = st.columns([1, 1, 3])
+
+if col1.button("▶️ Ejecutar Motor de Calificación", type="primary", use_container_width=True):
+    with st.spinner("Llamando a la Edge Function... Calculando puntajes de forma objetiva..."):
+        success, result = call_edge_function(selected_id)
+        
+        if success:
+            st.success("✅ Cálculo Finalizado con Éxito.")
+            st.toast("Puntajes actualizados en la base de datos.")
+            # Refrescar los datos de la app para mostrar los nuevos puntajes
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.error(f"❌ Error en la Ejecución de la Edge Function.")
+            st.json(result)
+
+# 4. Visualización Profesional del Ranking
+st.subheader("Cuadro Comparativo y Ranking Final (Base 100)")
+
+# Función de estilo para destacar el ganador y el formato
+def style_ranking(df):
+    """Aplica estilos al DataFrame para hacerlo más profesional y destacar el ganador."""
+    styles = []
+
+    # Estilo para el ganador (Ranking 1)
+    is_winner = df['ranking'] == 1
+    styles.append({
+        'selector': '',
+        'props': [
+            ('background-color', '#e6fff0' if is_winner else '#ffffff'), # Fondo verde suave para el ganador
+            ('font-weight', 'bold' if is_winner else 'normal'),
+        ]
+    })
+    
+    # Estilo para celdas numéricas (alineación y color)
+    styles.append({
+        'selector': '.col-puntaje_total, .col-puntaje_precio, .col-puntaje_tecnico',
+        'props': [
+            ('text-align', 'right'),
+        ]
+    })
+    
+    return [
+        {'selector': 'th', 'props': [('background-color', '#004d40'), ('color', 'white'), ('font-size', '14px')]}
+    ] + [
+        {'selector': 'tbody tr:hover', 'props': [('background-color', '#f0f0f0')]},
+        {'selector': 'td', 'props': [('font-size', '14px')]}
+    ]
+
+
+st.dataframe(
+    display_df.style.apply(lambda x: ['background-color: #e6fff0; font-weight: bold' if x['ranking'] == 1 else '' for i in x], axis=1)
+                .set_properties(**{'text-align': 'right'}, subset=['puntaje_precio', 'puntaje_tecnico', 'puntaje_total'])
+                .set_table_styles([
+                    {'selector': 'th', 'props': [('background-color', '#004d40'), ('color', 'white'), ('font-size', '14px')]},
+                    {'selector': 'td', 'props': [('font-size', '14px')]}
+                ]),
+    use_container_width=True,
+    hide_index=True
+)
+
+# 5. Conclusiones Rápidas
+ganador = display_df.iloc[0]
+st.metric(
+    label="Ganador (Buena Pro Provisional)", 
+    value=ganador['razon_social'], 
+    delta=f"Puntaje Total: {ganador['puntaje_total']} / 100", 
+    delta_color="normal"
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(f"**Requisito Cubierto:** RF-04 (Asistencia a la Evaluación)")
+st.sidebar.markdown(f"**Próximo Paso:** Generación Automática de Acta (RF-05)")
+
+# Nota sobre el puntaje técnico (para el usuario)
 st.markdown("---")
-
-expedientes = get_expedientes_pendientes()
-
-if not expedientes:
-    st.warning("No hay expedientes pendientes de evaluación automática.")
-else:
-    # Selector de Expediente
-    exp_opciones = {exp['codigo_proceso']: exp['id'] for exp in expedientes}
-    
-    proceso_seleccionado = st.selectbox("Seleccione el Proceso a Evaluar:", list(exp_opciones.keys()))
-    
-    if proceso_seleccionado:
-        exp_id_seleccionado = exp_opciones[proceso_seleccionado]
-        
-        # Muestra la información del expediente
-        exp_info = [exp for exp in expedientes if exp['id'] == exp_id_seleccionado][0]
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Objeto del Contrato", exp_info['objeto_contrato'])
-        with col2:
-            st.metric("Valor Estimado", f"S/ {exp_info['valor_estimado']:,.2f}")
-        
-        st.markdown("---")
-        
-        # Botón clave para iniciar la evaluación
-        if st.button("▶Ejecutar Calificación Automática (Edge Function)", type="primary"):
-            ejecutar_evaluacion_automatica(exp_id_seleccionado)
-            st.experimental_rerun() # Forzar la recarga para mostrar resultados
-            
-        st.markdown("---")
-        
-        # Mostrar la tabla de resultados
-        st.header(f"Resultados de Evaluación ({proceso_seleccionado})")
-        
-        resultados = get_resultados_evaluacion(exp_id_seleccionado)
-        
-        if resultados:
-            df = pd.DataFrame(resultados)
-            
-            # Formato y selección de columnas para la visualización
-            df_display = df[['razon_social', 'monto_ofertado', 'puntaje_precio', 'puntaje_tecnico', 'puntaje_total']]
-            
-            # Formatear el ranking
-            df_display['Ranking'] = df_display['puntaje_total'].rank(ascending=False).astype(int)
-            df_display = df_display.sort_values(by='Ranking')
-            
-            # Aplicar formato de moneda y decimales
-            df_display['monto_ofertado'] = df_display['monto_ofertado'].apply(lambda x: f"S/ {x:,.2f}")
-            df_display = df_display.rename(columns={'razon_social': 'Postor', 'monto_ofertado': 'Monto Ofertado', 'puntaje_precio': 'Puntaje Económico', 'puntaje_tecnico': 'Puntaje Técnico', 'puntaje_total': 'Puntaje Total'})
-            
-            # Mostrar la tabla de resultados
-            st.dataframe(df_display, use_container_width=True)
-            
-            # Resaltar al ganador (Postor con Ranking 1)
-            ganador = df_display[df_display['Ranking'] == 1]['Postor'].iloc[0]
-            st.success(f"La Buena Pro debe otorgarse a: **{ganador}** (Máximo Puntaje Total).")
+st.markdown("""
+**Nota sobre el Puntaje Técnico:** El puntaje técnico (`puntaje_tecnico`) mostrado ya es el promedio de las calificaciones asignadas por los miembros del Comité (registradas en la tabla `evaluaciones_ofertas`), lo que garantiza la **objetividad** y la **trazabilidad**.
+""")

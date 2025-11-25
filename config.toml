@@ -1,6 +1,0 @@
-# Archivo de configuración para credenciales sensibles
-# No subir este archivo al repositorio en producción
-
-SUPABASE_URL = "https://xvyytrrluzsdlwsyqxwe.supabase.co"
-SUPABASE_KEY = "TeyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2eXl0cnJsdXpzZGx3c3lxeHdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQwNzQzMzgsImV4cCI6MjA3OTY1MDMzOH0.5YscDuxmBe5cXBtY3wGw9NNzJKGtHy3IqhC3w9eS5uk"
-EDGE_FUNCTION_PATH = "https://xvyytrrluzsdlwsyqxwe.supabase.co/functions/v1/evaluar_ofertas_sigsel"
