@@ -4,11 +4,26 @@ import pandas as pd
 from supabase import create_client, Client
 import json
 
+import os
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    try:
+        import tomli as tomllib  # Para versiones <3.11, instalar tomli
+    except ImportError:
+        raise ImportError("Falta el paquete 'tomli'. Instala con 'pip install tomli' para Python <3.11.")
+
 # --- 1. Configuración de Conexión a Supabase (Seguridad) ---
 # Se recomienda usar secretos de Streamlit (st.secrets) para variables sensibles.
-SUPABASE_URL = "TU_URL_SUPABASE"  # Reemplazar con la URL de tu proyecto
-SUPABASE_KEY = "TU_KEY_ANON"       # Reemplazar con tu clave Anon Key
-EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/evaluar_ofertas_sigsel" # URL de tu Edge Function
+# Para producción, usar st.secrets y nunca subir claves al repositorio.
+config_path = os.path.join(os.path.dirname(__file__), "config.toml")
+with open(config_path, "rb") as f:
+    config = tomllib.load(f)
+
+SUPABASE_URL = config["SUPABASE_URL"]
+SUPABASE_KEY = config["SUPABASE_KEY"]
+EDGE_FUNCTION_PATH = config.get("EDGE_FUNCTION_PATH", "/functions/v1/evaluar_ofertas_sigsel")
+EDGE_FUNCTION_URL = f"{SUPABASE_URL}{EDGE_FUNCTION_PATH}"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
