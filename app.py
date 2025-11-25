@@ -33,7 +33,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 @st.cache_data
 def get_expedientes_pendientes():
     """Obtiene la lista de expedientes en estado 'Evaluando Ofertas'."""
-    response = supabase.from('expedientes_contratacion').select('*').eq('estado_fase', 'Evaluando Ofertas').execute()
+    response = supabase.table('expedientes_contratacion').select('*').eq('estado_fase', 'Evaluando Ofertas').execute()
     # Convertir JSONB a dict si es necesario, aunque Supabase Python lo hace por defecto
     return response.data
 
@@ -58,7 +58,7 @@ def ejecutar_evaluacion_automatica(expediente_id):
 # Función para obtener los resultados actualizados
 def get_resultados_evaluacion(expediente_id):
     """Obtiene todas las ofertas con los puntajes calculados."""
-    response = supabase.from('ofertas_recibidas').select('*').eq('expediente_id', expediente_id).order('puntaje_total', ascending=False).execute()
+    response = supabase.table('ofertas_recibidas').select('*').eq('expediente_id', expediente_id).order('puntaje_total', ascending=False).execute()
     return response.data
 
 # --- 3. INTERFAZ DE STREAMLIT ---
